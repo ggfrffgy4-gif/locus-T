@@ -92,26 +92,42 @@ def get_ai_data_from_gemini(uni_name):
             "response_mime_type": "application/json"
         }
     }
-    
-    # Модели с поддержкой актуального API Google
-    models_to_try = [
-        "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro-latest"
-    ]
-    
+
+    # 1. Автоматически запрашиваем список всех доступных моделей у Google под ваш ключ
+    target_models = []
+    try:
+        r_models = requests.get(
+            "[https://generativelanguage.googleapis.com/v1beta/models](https://generativelanguage.googleapis.com/v1beta/models)",
+            params={"key": GEMINI_API_KEY},
+            timeout=10
+        )
+        if r_models.status_code == 200:
+            for item in r_models.json().get("models", []):
+                methods = item.get("supportedGenerationMethods", [])
+                if "generateContent" in methods:
+                    target_models.append(item.get("name"))
+    except Exception:
+        pass
+
+    if not target_models:
+        target_models = ["models/gemini-2.0-flash", "models/gemini-2.5-flash", "models/gemini-1.5-flash"]
+
+    # Приоритет отдаем быстрым flash-моделям
+    target_models.sort(key=lambda x: (
+        0 if "2.0-flash" in x else (1 if "2.5-flash" in x else (2 if "1.5-flash" in x else 3))
+    ))
+
     last_err = ""
-    for m in models_to_try:
-        base_part = "https://" + "generativelanguage.googleapis.com"
-        api_url = f"{base_part}/v1beta/models/{m}:generateContent"
+    for full_name in target_models:
+        clean_model = full_name.replace("models/", "")
+        api_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){clean_model}:generateContent"
         try:
             res = requests.post(
                 api_url,
                 params={"key": GEMINI_API_KEY},
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=18
+                timeout=20
             )
             if res.status_code == 200:
                 raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -121,9 +137,8 @@ def get_ai_data_from_gemini(uni_name):
                 last_err = f"Google HTTP {res.status_code}: {res.text[:120]}"
         except Exception as e:
             last_err = str(e)
-            
-    raise RuntimeError(last_err or "Ошибка обращения к Gemini")
 
+    raise RuntimeError(last_err or "Все модели Gemini отклонили запрос")
 @app.route("/")
 def home():
     return render_template("index.html")
