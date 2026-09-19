@@ -8,359 +8,203 @@ from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 
-# ==============================================================================
-# НАСТРОЙКА КЛЮЧА GEMINI API:
-# Берется автоматически из переменной окружения (например, на Render или через set)
-# ==============================================================================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Ключ читается из настроек Render (Environment Variables) или локального окружения
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 
 def get_wikipedia_campus_photos(uni_name):
-  """Ищет до 8 фотографий кампуса вуза из Википедии."""
-  headers = {"User-Agent": "LocusCampusAI/3.0 (student project)"}
+  """Ищет реальные фотографии кампуса через Wikipedia API."""
+  headers = {"User-Agent": "LocusCampusAI/5.0 (student campus project)"}
+  found_photos = []
 
-  query_clean = uni_name.strip()
-  if "university" not in query_clean.lower():
-    search_term = f"{query_clean} University"
-  else:
-    search_term = query_clean
+  # Очищаем запрос от дублирующих слов
+  clean_name = re.sub(
+      r"\b(university|университет|институт)\b", "", uni_name, flags=re.I
+  ).strip()
+  search_query = f"{clean_name} campus"
 
   search_url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
       "action": "query",
-      "list": "search",
-      "srsearch": search_term,
+      "generator": "search",
+      "gsrsearch": search_query,
+      "gsrlimit": 5,
+      "prop": "images",
+      "imlimit": 40,
       "format": "json",
       "utf8": 1,
   })
 
-  page_title = search_term
+  bad_words = [
+      "logo",
+      "seal",
+      "coat",
+      "flag",
+      "icon",
+      "stub",
+      "symbol",
+      "sign",
+      "map",
+      "diagram",
+      "chart",
+      "signature",
+      "portrait",
+      "graph",
+  ]
+  image_titles = []
+
   try:
     req = urllib.request.Request(search_url, headers=headers)
     with urllib.request.urlopen(req, timeout=5) as resp:
       data = json.loads(resp.read().decode("utf-8"))
-      results = data.get("query", {}).get("search", [])
-      if results:
-        page_title = results[0]["title"]
-  except Exception as e:
-    print(f"Ошибка поиска статьи: {e}")
-
-  images_url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
-      "action": "query",
-      "titles": page_title,
-      "prop": "images",
-      "imlimit": 35,
-      "format": "json",
-      "utf8": 1,
-  })
-
-  found_photos = []
-  try:
-    req = urllib.request.Request(images_url, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as resp:
-      data = json.loads(resp.read().decode("utf-8"))
       pages = data.get("query", {}).get("pages", {})
-      image_titles = []
-      bad_keywords = [
-          "logo",
-          "seal",
-          "coat of arms",
-          "flag",
-          "icon",
-          "stub",
-          "symbol",
-          "sign",
-          "map",
-          "diagram",
-          "chart",
-      ]
-
       for _, p in pages.items():
         for img in p.get("images", []):
           t = img.get("title", "")
-          lower_t = t.lower()
-          if any(
-              lower_t.endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".webp"]
-          ):
-            if not any(bad in lower_t for bad in bad_keywords):
+          tl = t.lower()
+          if any(tl.endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
+            if not any(bad in tl for bad in bad_words) and t not in image_titles:
               image_titles.append(t)
-
-      categories = [
-          "Главный корпус",
-          "Архитектура",
-          "Студенческая жизнь",
-          "Библиотека",
-          "Инфраструктура",
-          "Кампус",
-          "Лаборатории",
-      ]
-
-      for idx, img_t in enumerate(image_titles[:12]):
-        if len(found_photos) >= 8:
-          break
-        info_url = (
-            "https://en.wikipedia.org/w/api.php?"
-            + urllib.parse.urlencode({
-                "action": "query",
-                "titles": img_t,
-                "prop": "imageinfo",
-                "iiprop": "url",
-                "iiurlwidth": 900,
-                "format": "json",
-            })
-        )
-        try:
-          req_info = urllib.request.Request(info_url, headers=headers)
-          with urllib.request.urlopen(req_info, timeout=4) as img_resp:
-            img_data = json.loads(img_resp.read().decode("utf-8"))
-            img_pages = img_data.get("query", {}).get("pages", {})
-            for _, ipage in img_pages.items():
-              info_list = ipage.get("imageinfo", [])
-              if info_list:
-                thumb_url = info_list[0].get("thumburl") or info_list[0].get(
-                    "url"
-                )
-                clean_name = (
-                    img_t.replace("File:", "")
-                    .replace(".jpg", "")
-                    .replace(".png", "")
-                    .replace(".jpeg", "")
-                )
-                if thumb_url:
-                  found_photos.append({
-                      "url": thumb_url,
-                      "title": clean_name[:50],
-                      "category": categories[idx % len(categories)],
-                  })
-        except Exception:
-          continue
   except Exception as e:
-    print(f"Ошибка загрузки изображений: {e}")
+    print(f"Ошибка поиска картинок: {e}")
+
+  for title in image_titles[:15]:
+    if len(found_photos) >= 10:
+      break
+    info_url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
+        "action": "query",
+        "titles": title,
+        "prop": "imageinfo",
+        "iiprop": "url",
+        "iiurlwidth": 900,
+        "format": "json",
+    })
+    try:
+      req_info = urllib.request.Request(info_url, headers=headers)
+      with urllib.request.urlopen(req_info, timeout=4) as resp:
+        info_data = json.loads(resp.read().decode("utf-8"))
+        for _, p in info_data.get("query", {}).get("pages", {}).items():
+          info = p.get("imageinfo", [])
+          if info:
+            url = info[0].get("thumburl") or info[0].get("url")
+            raw_title = (
+                title.replace("File:", "")
+                .replace(".jpg", "")
+                .replace(".png", "")
+                .replace(".jpeg", "")
+            )
+            raw_title = re.sub(r"[-_]+", " ", raw_title).strip()
+            if url:
+              found_photos.append({
+                  "url": url,
+                  "title": raw_title[:50],
+                  "category": "Кампус и архитектура",
+              })
+    except Exception:
+      continue
 
   return found_photos
 
 
-def generate_detailed_fallback(uni_name):
-  """Подробная база с реальными фактами на случай отсутствия API-ключа."""
-  lowered = uni_name.lower()
+def get_ai_data_from_gemini(uni_name):
+  """Генерирует уникальную информацию исключительно через нейросеть Gemini без заготовок."""
+  if not GEMINI_API_KEY or GEMINI_API_KEY == "ВАШ_КЛЮЧ_СЮДА":
+    raise ValueError(
+        "Ключ GEMINI_API_KEY не задан! Добавьте его в Environment Variables в"
+        " настройках Render или на компьютере."
+    )
 
-  if "stanford" in lowered or "стэнфорд" in lowered:
-    return {
-        "location": "Пало-Альто / Станфорд, Калифорния, США",
-        "overview": (
-            "Stanford University — один из ведущих мировых исследовательских"
-            " центров, стабильно занимающий топ-3 в мировых рейтингах QS и THE."
-            " Кампус площадью более 33 кв. км является одним из самых больших в"
-            " США, здесь обучается около 17 000 студентов. Университет стал"
-            " колыбелью и научным двигателем Кремниевой долины."
-        ),
-        "atmosphere": (
-            "Студенты живут в жилых домах и кооперативах, почти все передвигаются"
-            " на велосипедах. Культура вуза пропитана духом технологических"
-            " стартапов: проекты создаются прямо в общежитиях. Знаковые традиции"
-            " — праздник 'Full Moon on the Quad' и эксцентричные выступления"
-            " студенческого оркестра Leland Stanford Band."
-        ),
-        "history": (
-            "Вуз основан в 1885 году сенатором Лилендом Стэнфордом и его"
-            " супругой Джейн в память об умершем сыне. В середине XX века декан"
-            " Фредерик Терман основал Стенфордский индустриальный парк, положив"
-            " начало Кремниевой долине. С вузом связаны 85 нобелевских лауреатов"
-            " и основатели компаний Google, HP, Nike, Netflix и Yahoo."
-        ),
-        "strengths": [
-            "Computer Science & Artificial Intelligence (лаборатория SAIL)",
-            "Graduate School of Business (GSB — №1 бизнес-школа)",
-            "Инженерия, биоинженерия и робототехника",
-            "Юриспруденция и медицинские исследования",
-        ],
-        "facts": [
-            (
-                "Если бы компании, созданные выпускниками Стэнфорда, образовали"
-                " отдельную страну, её экономика вошла бы в топ-10 стран мира."
-            ),
-            (
-                "Ларри Пейдж и Сергей Брин разработали первую версию поисковой"
-                " системы Google в комнате стэнфордского общежития."
-            ),
-            (
-                "У университета нет официального маскота, его символ —"
-                " Стэнфордское Дерево (секвойя El Palo Alto)."
-            ),
-            (
-                "87-метровая башня Гувера хранит редкие исторические архивы XX"
-                " века и уникальный карильон из 48 колоколов."
-            ),
-        ],
-        "admissions": {
-            "exams": "SAT 1500-1570 / ACT 34-35, TOEFL 105+ / IELTS 8.0, GPA 3.9+",
-            "documents": (
-                "Common Application, развернутые эссе Стэнфорда, 2 рекомендации"
-                " преподавателей, список внеучебных побед"
-            ),
-            "funding": (
-                "Бесплатное обучение для семей с доходом менее $150,000/год,"
-                " щедрая стипендиальная помощь"
-            ),
-            "insider_tip": (
-                "Комиссия ищет 'Intellectual Vitality' — искреннюю страсть к"
-                " созданию нового и исследовательскую инициативу."
-            ),
-        },
-    }
-
-  # Для всех остальных вузов
-  return {
-      "location": f"Кампус {uni_name}",
-      "overview": (
-          f"{uni_name} входит в число признанных академических центров,"
-          " предлагая фундаментальные программы бакалавриата и магистратуры."
-          " Университет объединяет сильные научно-исследовательские школы и"
-          " привлекает студентов высоким уровнем трудоустройства выпускников."
-      ),
-      "atmosphere": (
-          "Студенческая жизнь насыщена хакатонами, научными конференциями и"
-          " клубами по интересам. На территории кампуса расположены современные"
-          " коворкинги, лаборатории и развитая студенческая инфраструктура."
-      ),
-      "history": (
-          f"{uni_name} имеет богатую историю становления и преемственности"
-          " поколений. Выпускники вуза работают в ведущих технологических,"
-          " финансовых и государственных институтах."
-      ),
-      "strengths": [
-          "Информационные технологии и Software Engineering",
-          "Инженерные науки и инновации",
-          "Экономика, бизнес и аналитика",
-          "Фундаментальные исследования",
-      ],
-      "facts": [
-          (
-              f"Выпускники {uni_name} успешно руководят крупными компаниями и"
-              " исследовательскими центрами."
-          ),
-          (
-              "Кампус сочетает академические традиции с ультрасовременным"
-              " оборудованием и лабораториями."
-          ),
-          (
-              "В университете регулярно проводятся ярмарки вакансий с участием"
-              " международных работодателей."
-          ),
-          (
-              "Библиотечные базы вуза предоставляют доступ к ключевым мировым"
-              " научным изданиям (Scopus, IEEE)."
-          ),
-      ],
-      "admissions": {
-          "exams": (
-              "IELTS 6.5–7.5, профильные тесты (ЕНТ/SAT/GRE) и высокий средний"
-              " балл аттестата."
-          ),
-          "documents": (
-              "Академический транскрипт, мотивационное письмо (Personal"
-              " Statement), рекомендации."
-          ),
-          "funding": (
-              "Государственные гранты, академические стипендии за высокие баллы"
-              " и скидки от вуза."
-          ),
-          "insider_tip": (
-              "Показывайте портфолио реальных проектов, олимпиадные достижения"
-              " и лидерский опыт."
-          ),
-      },
-  }
-
-
-def get_ai_data(uni_name):
-  """Генерирует профиль вуза через Gemini API или отдает резервные факты."""
   prompt = f"""
-Ты международный эксперт по высшему образованию. 
-Составь подробное, уникальное описание для университета "{uni_name}". 
-НЕ пиши общие пустые фразы. Приводи ТОЛЬКО реальные факты, цифры, имена основателей, нобелевских лауреатов, названия кампусов, факультетов и студенческих традиций.
+Ты — аналитическая система по высшему образованию.
+Составь детальный, уникальный и живой профиль университета: "{uni_name}".
 
-Ответь СТРОГО в формате валидного JSON со следующими полями на русском языке (без разметки markdown, только сырой JSON):
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать пустые шаблонные отговорки («один из ведущих вузов», «высокое качество знаний»).
+Пиши ТОЛЬКО реальные факты:
+- Конкретные цифры: год основания, место в рейтинге QS/THE, число студентов, площадь кампуса.
+- Имена знаменитых выпускников, нобелевских лауреатов, основателей стартапов.
+- Названия общежитий, студенческих клубов, спортивных команд и уникальных традиций.
+- Точные баллы тестов для поступления (SAT, IELTS, GPA, ЕНТ) и конкретные гранты.
+
+Ответь ИСКЛЮЧИТЕЛЬНО валидным JSON-объектом на русском языке (без разметки markdown ```json):
 {{
-  "location": "Точный город, Штат/Область, Страна",
-  "overview": "Развернутое описание (4-5 предложений): мировой статус в QS/THE, площадь кампуса, сколько студентов учится, чем вуз знаменит.",
-  "atmosphere": "Студенческая жизнь (4-5 предложений): жизнь в резиденциях, студенческие клубы, спорт и ежегодные традиции именно этого вуза.",
-  "history": "История и наследие (4-5 предложений): точный год основания, основатели, ключевые вехи, изобретения и знаменитые выпускники.",
+  "location": "Город, Регион/Штат, Страна",
+  "overview": "Развернутый обзор (4-5 предложений): мировой статус, позиции в QS/THE, масштабы кампуса, сколько студентов учится и чем университет известен миру.",
+  "atmosphere": "Студенческая жизнь (4-5 предложений): как устроена жизнь в кампусе, реальные клубы, общежития, традиции и спортивные лиги.",
+  "history": "История и наследие (4-5 предложений): точный год основания, кем создан, главные вехи, революционные открытия и известные выпускники.",
   "strengths": [
-    "Сильный факультет/направление с пояснением",
-    "Сильный факультет/направление с пояснением",
-    "Сильный факультет/направление с пояснением",
-    "Сильный факультет/направление с пояснением"
+    "Направление 1 с точным названием факультета или лаборатории",
+    "Направление 2 с точным названием факультета или лаборатории",
+    "Направление 3 с точным названием факультета или лаборатории",
+    "Направление 4 с точным названием факультета или лаборатории"
   ],
   "facts": [
-    "Конкретный удивительный исторический или архитектурный факт",
-    "Факт о знаменитых стартапах, компаниях или научных прорывах выпускников",
-    "Необычная студенческая традиция или примета",
-    "Факт о библиотеке, спорте или кампусе с реальными цифрами/деталями"
+    "Удивительный рекорд кампуса, библиотеки или архитектуры с конкретными цифрами",
+    "Факт о созданных студентами стартапах, компаниях или научных прорывах",
+    "Необычная студенческая традиция, примета или ритуал перед сессией",
+    "Малоизвестный исторический или спортивный факт об этом вузе"
   ],
   "admissions": {{
-    "exams": "Требования к экзаменам (IELTS/TOEFL, SAT/ACT/ЕНТ/GRE, минимальный GPA)",
-    "documents": "Пакет документов (Personal Statement, резюме, рекомендации)",
-    "funding": "Программы финансирования и стипендии (Need-blind, Болашак, Merit scholarships)",
-    "insider_tip": "Инсайдерский совет: что больше всего ценится в кандидатах именно этого вуза"
+    "exams": "Конкретные проходные баллы: IELTS/TOEFL, SAT/ACT/ЕНТ/GRE, минимальный GPA",
+    "documents": "Что должно быть в заявке: темы эссе, портфолио, рекомендации",
+    "funding": "Реальные гранты, стипендии (Need-based, Болашак, Merit) и покрытие расходов",
+    "insider_tip": "Инсайдерский совет абитуриенту: на чем сделать акцент в портфолио для этого вуза"
   }}
 }}
 """
 
-  api_key = GEMINI_API_KEY.strip()
+  last_error = None
+  # Пробуем доступные модели Gemini
+  for model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+    try:
+      url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={GEMINI_API_KEY}"
+      payload = {
+          "contents": [{"parts": [{"text": prompt}]}],
+          "generationConfig": {
+              "temperature": 0.35,
+              "response_mime_type": "application/json",
+          },
+      }
+      req = urllib.request.Request(
+          url,
+          data=json.dumps(payload).encode("utf-8"),
+          headers={"Content-Type": "application/json"},
+      )
 
-  if api_key and api_key != "ВАШ_КЛЮЧ_СЮДА":
-    for model_name in [
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-2.0-flash",
-    ]:
-      try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.4,
-                "response_mime_type": "application/json",
-            },
-        }
+      with urllib.request.urlopen(req, timeout=20) as resp:
+        res_data = json.loads(resp.read().decode("utf-8"))
+        text_resp = res_data["candidates"][0]["content"]["parts"][0]["text"]
 
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+        # Очищаем от случайных markdown-обёрток
+        cleaned = re.sub(
+            r"^```(?:json)?\s*|\s*```$", "", text_resp.strip(), flags=re.M
         )
+        data = json.loads(cleaned)
+        print(f" Gemini успешно сгенерировал данные через модель {model}!")
+        return data
 
-        with urllib.request.urlopen(req, timeout=15) as resp:
-          res_data = json.loads(resp.read().decode("utf-8"))
-          text_resp = res_data["candidates"][0]["content"]["parts"][0]["text"]
+    except urllib.error.HTTPError as http_err:
+      err_text = http_err.read().decode("utf-8", errors="ignore")
+      last_error = f"HTTP {http_err.code} от Google Gemini ({model}): {err_text}"
+      print(f"⚠️ {last_error}")
+    except Exception as e:
+      last_error = f"Ошибка Gemini ({model}): {str(e)}"
+      print(f"⚠️ {last_error}")
 
-          cleaned = text_resp.strip()
-          if cleaned.startswith("```"):
-            cleaned = re.sub(
-                r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE
-            )
-            cleaned = re.sub(r"\s*```$", "", cleaned)
-
-          parsed_json = json.loads(cleaned.strip())
-          print(f" Успешно получены факты от Gemini ({model_name})!")
-          return parsed_json
-
-      except Exception as e:
-        print(f"⚠️ Ошибка Gemini ({model_name}): {e}")
-
-  print(" Внимание: сработал резервный генератор фактов.")
-  return generate_detailed_fallback(uni_name)
+  # Если все модели не ответили — выбрасываем реальную ошибку
+  raise RuntimeError(
+      f"Не удалось получить ответ от ИИ: {last_error}. Проверьте правильность"
+      " ключа GEMINI_API_KEY!"
+  )
 
 
-def get_google_maps_data(uni_name):
-  query_param = urllib.parse.quote_plus(f"{uni_name} campus")
+def get_map_urls(uni_name):
+  """Формирует рабочие ссылки на Google Maps."""
+  q = urllib.parse.quote_plus(f"{uni_name} University campus")
   return {
-      "view_url": (
-          f"[https://www.google.com/maps/search/?api=1&query=](https://www.google.com/maps/search/?api=1&query=){query_param}"
-      ),
+      # Надежная ссылка для iframe без блокировки
       "embed_url": (
-          f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){query_param}&t=&z=15&ie=UTF8&iwloc=&output=embed"
+          f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){q}&t=&z=15&ie=UTF8&iwloc=&output=embed"
       ),
+      "direct_url": f"[https://www.google.com/maps/search/?api=1&query=](https://www.google.com/maps/search/?api=1&query=){q}",
   }
 
 
@@ -374,7 +218,7 @@ def search():
   data = request.get_json() or {}
   raw_query = data.get("university", "").strip()
   if not raw_query:
-    return jsonify({"error": "Пустой запрос"}), 400
+    return jsonify({"error": "Введите название университета"}), 400
 
   aliases = {
       "nu": "Nazarbayev University",
@@ -394,13 +238,29 @@ def search():
       "мгу": "Lomonosov Moscow State University",
       "оксфорд": "University of Oxford",
       "oxford": "University of Oxford",
+      "кембридж": "University of Cambridge",
+      "cambridge": "University of Cambridge",
   }
 
   search_uni = aliases.get(raw_query.lower(), raw_query)
 
-  ai_content = get_ai_data(search_uni)
+  try:
+    # Генерируем реальные данные через ИИ
+    ai_content = get_ai_data_from_gemini(search_uni)
+  except Exception as e:
+    # Передаем точную ошибку на фронтенд, чтобы вы сразу видели, в чем проблема
+    return (
+        jsonify({
+            "error": (
+                f"Ошибка генерации ИИ: {str(e)}. Проверьте вкладку Environment"
+                " Variables в Render!"
+            )
+        }),
+        500,
+    )
+
   images = get_wikipedia_campus_photos(search_uni)
-  maps_info = get_google_maps_data(search_uni)
+  maps_info = get_map_urls(search_uni)
 
   return jsonify({
       "university": search_uni,
