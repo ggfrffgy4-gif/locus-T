@@ -103,7 +103,8 @@ def get_ai_data_from_gemini(uni_name):
     
     last_err = ""
     for m in models_to_try:
-        api_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){m}:generateContent"
+        base_part = "https://" + "generativelanguage.googleapis.com"
+        api_url = f"{base_part}/v1beta/models/{m}:generateContent"
         try:
             res = requests.post(
                 api_url,
