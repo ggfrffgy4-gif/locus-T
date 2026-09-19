@@ -1,38 +1,22 @@
 import json
 import os
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
 from flask import Flask, jsonify, render_template, request
+import requests
 
 app = Flask(__name__)
 
-# Ключ читается из настроек Render (Environment Variables) или локального окружения
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 
 def get_wikipedia_campus_photos(uni_name):
-  """Ищет реальные фотографии кампуса через Wikipedia API."""
-  headers = {"User-Agent": "LocusCampusAI/5.0 (student campus project)"}
+  headers = {"User-Agent": "LocusCampusAI/5.0 (educational campus project)"}
   found_photos = []
 
-  # Очищаем запрос от дублирующих слов
   clean_name = re.sub(
       r"\b(university|университет|институт)\b", "", uni_name, flags=re.I
   ).strip()
   search_query = f"{clean_name} campus"
-
-  search_url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
-      "action": "query",
-      "generator": "search",
-      "gsrsearch": search_query,
-      "gsrlimit": 5,
-      "prop": "images",
-      "imlimit": 40,
-      "format": "json",
-      "utf8": 1,
-  })
 
   bad_words = [
       "logo",
@@ -53,10 +37,24 @@ def get_wikipedia_campus_photos(uni_name):
   image_titles = []
 
   try:
-    req = urllib.request.Request(search_url, headers=headers)
-    with urllib.request.urlopen(req, timeout=5) as resp:
-      data = json.loads(resp.read().decode("utf-8"))
-      pages = data.get("query", {}).get("pages", {})
+    search_params = {
+        "action": "query",
+        "generator": "search",
+        "gsrsearch": search_query,
+        "gsrlimit": 5,
+        "prop": "images",
+        "imlimit": 30,
+        "format": "json",
+        "utf8": 1,
+    }
+    r = requests.get(
+        "https://en.wikipedia.org/w/api.php",
+        params=search_params,
+        headers=headers,
+        timeout=6,
+    )
+    if r.status_code == 200:
+      pages = r.json().get("query", {}).get("pages", {})
       for _, p in pages.items():
         for img in p.get("images", []):
           t = img.get("title", "")
@@ -64,25 +62,30 @@ def get_wikipedia_campus_photos(uni_name):
           if any(tl.endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
             if not any(bad in tl for bad in bad_words) and t not in image_titles:
               image_titles.append(t)
-  except Exception as e:
-    print(f"Ошибка поиска картинок: {e}")
+  except Exception:
+    pass
 
   for title in image_titles[:15]:
     if len(found_photos) >= 10:
       break
-    info_url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
-        "action": "query",
-        "titles": title,
-        "prop": "imageinfo",
-        "iiprop": "url",
-        "iiurlwidth": 900,
-        "format": "json",
-    })
     try:
-      req_info = urllib.request.Request(info_url, headers=headers)
-      with urllib.request.urlopen(req_info, timeout=4) as resp:
-        info_data = json.loads(resp.read().decode("utf-8"))
-        for _, p in info_data.get("query", {}).get("pages", {}).items():
+      info_params = {
+          "action": "query",
+          "titles": title,
+          "prop": "imageinfo",
+          "iiprop": "url",
+          "iiurlwidth": 900,
+          "format": "json",
+      }
+      r = requests.get(
+          "https://en.wikipedia.org/w/api.php",
+          params=info_params,
+          headers=headers,
+          timeout=4,
+      )
+      if r.status_code == 200:
+        pages = r.json().get("query", {}).get("pages", {})
+        for _, p in pages.items():
           info = p.get("imageinfo", [])
           if info:
             url = info[0].get("thumburl") or info[0].get("url")
@@ -97,7 +100,7 @@ def get_wikipedia_campus_photos(uni_name):
               found_photos.append({
                   "url": url,
                   "title": raw_title[:50],
-                  "category": "Кампус и архитектура",
+                  "category": "Кампус",
               })
     except Exception:
       continue
@@ -106,101 +109,64 @@ def get_wikipedia_campus_photos(uni_name):
 
 
 def get_ai_data_from_gemini(uni_name):
-  """Генерирует уникальную информацию исключительно через нейросеть Gemini без заготовок."""
-  if not GEMINI_API_KEY or GEMINI_API_KEY == "ВАШ_КЛЮЧ_СЮДА":
-    raise ValueError(
-        "Ключ GEMINI_API_KEY не задан! Добавьте его в Environment Variables в"
-        " настройках Render или на компьютере."
-    )
+  if not GEMINI_API_KEY:
+    raise ValueError("Переменная GEMINI_API_KEY не задана в настройках Render!")
 
   prompt = f"""
-Ты — аналитическая система по высшему образованию.
-Составь детальный, уникальный и живой профиль университета: "{uni_name}".
+Составь детальный, уникальный профиль университета: "{uni_name}".
+Приводи только реальные факты: год основания, место в QS/THE, число студентов, имена выпускников, нобелевских лауреатов, названия общежитий и традиций, баллы экзаменов (SAT, IELTS, ЕНТ).
 
-КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать пустые шаблонные отговорки («один из ведущих вузов», «высокое качество знаний»).
-Пиши ТОЛЬКО реальные факты:
-- Конкретные цифры: год основания, место в рейтинге QS/THE, число студентов, площадь кампуса.
-- Имена знаменитых выпускников, нобелевских лауреатов, основателей стартапов.
-- Названия общежитий, студенческих клубов, спортивных команд и уникальных традиций.
-- Точные баллы тестов для поступления (SAT, IELTS, GPA, ЕНТ) и конкретные гранты.
-
-Ответь ИСКЛЮЧИТЕЛЬНО валидным JSON-объектом на русском языке (без разметки markdown ```json):
+Ответь ИСКЛЮЧИТЕЛЬНО валидным JSON на русском языке (без разметки ```json):
 {{
-  "location": "Город, Регион/Штат, Страна",
-  "overview": "Развернутый обзор (4-5 предложений): мировой статус, позиции в QS/THE, масштабы кампуса, сколько студентов учится и чем университет известен миру.",
-  "atmosphere": "Студенческая жизнь (4-5 предложений): как устроена жизнь в кампусе, реальные клубы, общежития, традиции и спортивные лиги.",
-  "history": "История и наследие (4-5 предложений): точный год основания, кем создан, главные вехи, революционные открытия и известные выпускники.",
-  "strengths": [
-    "Направление 1 с точным названием факультета или лаборатории",
-    "Направление 2 с точным названием факультета или лаборатории",
-    "Направление 3 с точным названием факультета или лаборатории",
-    "Направление 4 с точным названием факультета или лаборатории"
-  ],
-  "facts": [
-    "Удивительный рекорд кампуса, библиотеки или архитектуры с конкретными цифрами",
-    "Факт о созданных студентами стартапах, компаниях или научных прорывах",
-    "Необычная студенческая традиция, примета или ритуал перед сессией",
-    "Малоизвестный исторический или спортивный факт об этом вузе"
-  ],
+  "location": "Город, Страна",
+  "overview": "Развернутый обзор (4-5 предложений) с цифрами и рейтингами.",
+  "atmosphere": "Студенческая жизнь (4-5 предложений): традиции, спорт, быт.",
+  "history": "История (4-5 предложений): основатели, даты, прорывы, выпускники.",
+  "strengths": ["Факультет 1 с деталями", "Факультет 2 с деталями", "Факультет 3 с деталями", "Факультет 4 с деталями"],
+  "facts": ["Факт 1 с цифрами", "Факт 2 о стартапах/науке", "Факт 3 о традициях", "Факт 4"],
   "admissions": {{
-    "exams": "Конкретные проходные баллы: IELTS/TOEFL, SAT/ACT/ЕНТ/GRE, минимальный GPA",
-    "documents": "Что должно быть в заявке: темы эссе, портфолио, рекомендации",
-    "funding": "Реальные гранты, стипендии (Need-based, Болашак, Merit) и покрытие расходов",
-    "insider_tip": "Инсайдерский совет абитуриенту: на чем сделать акцент в портфолио для этого вуза"
+    "exams": "Баллы IELTS, SAT, GPA и требования",
+    "documents": "Требования к эссе и портфолио",
+    "funding": "Стипендии, гранты, покрытие расходов",
+    "insider_tip": "Совет поступающим"
   }}
 }}
 """
 
-  last_error = None
-  # Пробуем доступные модели Gemini
+  payload = {
+      "contents": [{"parts": [{"text": prompt}]}],
+      "generationConfig": {
+          "temperature": 0.35,
+          "response_mime_type": "application/json",
+      },
+  }
+
+  headers = {"Content-Type": "application/json"}
+  last_err = ""
+
   for model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={GEMINI_API_KEY}"
     try:
-      url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={GEMINI_API_KEY}"
-      payload = {
-          "contents": [{"parts": [{"text": prompt}]}],
-          "generationConfig": {
-              "temperature": 0.35,
-              "response_mime_type": "application/json",
-          },
-      }
-      req = urllib.request.Request(
-          url,
-          data=json.dumps(payload).encode("utf-8"),
-          headers={"Content-Type": "application/json"},
-      )
-
-      with urllib.request.urlopen(req, timeout=20) as resp:
-        res_data = json.loads(resp.read().decode("utf-8"))
-        text_resp = res_data["candidates"][0]["content"]["parts"][0]["text"]
-
-        # Очищаем от случайных markdown-обёрток
-        cleaned = re.sub(
-            r"^```(?:json)?\s*|\s*```$", "", text_resp.strip(), flags=re.M
+      response = requests.post(url, json=payload, headers=headers, timeout=20)
+      if response.status_code == 200:
+        raw_text = (
+            response.json()["candidates"][0]["content"]["parts"][0]["text"]
         )
-        data = json.loads(cleaned)
-        print(f" Gemini успешно сгенерировал данные через модель {model}!")
-        return data
-
-    except urllib.error.HTTPError as http_err:
-      err_text = http_err.read().decode("utf-8", errors="ignore")
-      last_error = f"HTTP {http_err.code} от Google Gemini ({model}): {err_text}"
-      print(f"⚠️ {last_error}")
+        cleaned = re.sub(
+            r"^```(?:json)?\s*|\s*```$", "", raw_text.strip(), flags=re.M
+        )
+        return json.loads(cleaned)
+      else:
+        last_err = f"HTTP {response.status_code}: {response.text[:150]}"
     except Exception as e:
-      last_error = f"Ошибка Gemini ({model}): {str(e)}"
-      print(f"⚠️ {last_error}")
+      last_err = str(e)
 
-  # Если все модели не ответили — выбрасываем реальную ошибку
-  raise RuntimeError(
-      f"Не удалось получить ответ от ИИ: {last_error}. Проверьте правильность"
-      " ключа GEMINI_API_KEY!"
-  )
+  raise RuntimeError(last_err or "Нет ответа от моделей Gemini")
 
 
 def get_map_urls(uni_name):
-  """Формирует рабочие ссылки на Google Maps."""
-  q = urllib.parse.quote_plus(f"{uni_name} University campus")
+  q = requests.utils.quote(f"{uni_name} University campus")
   return {
-      # Надежная ссылка для iframe без блокировки
       "embed_url": (
           f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){q}&t=&z=15&ie=UTF8&iwloc=&output=embed"
       ),
@@ -235,29 +201,16 @@ def search():
       "stanford": "Stanford University",
       "гарвард": "Harvard University",
       "harvard": "Harvard University",
-      "мгу": "Lomonosov Moscow State University",
       "оксфорд": "University of Oxford",
       "oxford": "University of Oxford",
-      "кембридж": "University of Cambridge",
-      "cambridge": "University of Cambridge",
   }
 
   search_uni = aliases.get(raw_query.lower(), raw_query)
 
   try:
-    # Генерируем реальные данные через ИИ
     ai_content = get_ai_data_from_gemini(search_uni)
   except Exception as e:
-    # Передаем точную ошибку на фронтенд, чтобы вы сразу видели, в чем проблема
-    return (
-        jsonify({
-            "error": (
-                f"Ошибка генерации ИИ: {str(e)}. Проверьте вкладку Environment"
-                " Variables в Render!"
-            )
-        }),
-        500,
-    )
+    return jsonify({"error": f"Ошибка ИИ: {str(e)}"}), 500
 
   images = get_wikipedia_campus_photos(search_uni)
   maps_info = get_map_urls(search_uni)
