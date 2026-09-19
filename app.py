@@ -10,7 +10,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 
 def get_wikipedia_campus_photos(uni_name):
-  headers = {"User-Agent": "LocusCampusAI/5.0 (educational campus project)"}
+  headers = {"User-Agent": "LocusCampusAI/6.0"}
   found_photos = []
 
   clean_name = re.sub(
@@ -30,9 +30,6 @@ def get_wikipedia_campus_photos(uni_name):
       "map",
       "diagram",
       "chart",
-      "signature",
-      "portrait",
-      "graph",
   ]
   image_titles = []
 
@@ -65,8 +62,8 @@ def get_wikipedia_campus_photos(uni_name):
   except Exception:
     pass
 
-  for title in image_titles[:15]:
-    if len(found_photos) >= 10:
+  for title in image_titles[:12]:
+    if len(found_photos) >= 8:
       break
     try:
       info_params = {
@@ -74,7 +71,7 @@ def get_wikipedia_campus_photos(uni_name):
           "titles": title,
           "prop": "imageinfo",
           "iiprop": "url",
-          "iiurlwidth": 900,
+          "iiurlwidth": 800,
           "format": "json",
       }
       r = requests.get(
@@ -99,7 +96,7 @@ def get_wikipedia_campus_photos(uni_name):
             if url:
               found_photos.append({
                   "url": url,
-                  "title": raw_title[:50],
+                  "title": raw_title[:45],
                   "category": "Кампус",
               })
     except Exception:
@@ -110,11 +107,11 @@ def get_wikipedia_campus_photos(uni_name):
 
 def get_ai_data_from_gemini(uni_name):
   if not GEMINI_API_KEY:
-    raise ValueError("Переменная GEMINI_API_KEY не задана в настройках Render!")
+    raise ValueError("GEMINI_API_KEY не задан в переменных Render!")
 
   prompt = f"""
-Составь детальный, уникальный профиль университета: "{uni_name}".
-Приводи только реальные факты: год основания, место в QS/THE, число студентов, имена выпускников, нобелевских лауреатов, названия общежитий и традиций, баллы экзаменов (SAT, IELTS, ЕНТ).
+Составь детальный профиль университета: "{uni_name}".
+Приводи реальные факты: год основания, место в QS/THE, число студентов, имена выпускников, нобелевских лауреатов, названия общежитий и традиций, баллы экзаменов (SAT, IELTS, ЕНТ).
 
 Ответь ИСКЛЮЧИТЕЛЬНО валидным JSON на русском языке (без разметки ```json):
 {{
@@ -144,19 +141,26 @@ def get_ai_data_from_gemini(uni_name):
   headers = {"Content-Type": "application/json"}
   last_err = ""
 
-  for model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
-   url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + GEMINI_API_KEY
+  models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+
+  for model in models:
+    url = (
+        "[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)"
+        + model
+        + ":generateContent?key="
+        + GEMINI_API_KEY
+    )
+    try:
       response = requests.post(url, json=payload, headers=headers, timeout=20)
       if response.status_code == 200:
-        raw_text = (
-            response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        )
+        data = response.json()
+        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
         cleaned = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", raw_text.strip(), flags=re.M
         )
         return json.loads(cleaned)
       else:
-        last_err = f"HTTP {response.status_code}: {response.text[:150]}"
+        last_err = f"Google HTTP {response.status_code}: {response.text[:120]}"
     except Exception as e:
       last_err = str(e)
 
@@ -202,6 +206,8 @@ def search():
       "harvard": "Harvard University",
       "оксфорд": "University of Oxford",
       "oxford": "University of Oxford",
+      "кембридж": "University of Cambridge",
+      "cambridge": "University of Cambridge",
   }
 
   search_uni = aliases.get(raw_query.lower(), raw_query)
@@ -229,4 +235,5 @@ def search():
 
 
 if __name__ == "__main__":
-  app.run(host="0.0.0.0", port=8080, debug=True)
+  port = int(os.environ.get("PORT", 8080))
+  app.run(host="0.0.0.0", port=port)
