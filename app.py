@@ -9,7 +9,7 @@ app = Flask(__name__)
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 def get_wikipedia_campus_photos(uni_name):
-    headers = {"User-Agent": "LocusCampusAI/1.0"}
+    headers = {"User-Agent": "LocusCampusAI/8.0"}
     photos = []
     clean_name = re.sub(r"\b(university|университет|институт)\b", "", uni_name, flags=re.I).strip()
     
@@ -19,7 +19,7 @@ def get_wikipedia_campus_photos(uni_name):
             params={
                 "action": "query",
                 "generator": "search",
-                "gsrsearch": f"{clean_name} campus",
+                "gsrsearch": clean_name + " campus",
                 "gsrlimit": 5,
                 "prop": "images",
                 "imlimit": 20,
@@ -33,11 +33,12 @@ def get_wikipedia_campus_photos(uni_name):
         for _, p in pages.items():
             for img in p.get("images", []):
                 t = img.get("title", "")
-                if any(t.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
-                    if not any(bad in t.lower() for bad in ["logo", "seal", "flag", "sign", "map"]):
+                tl = t.lower()
+                if any(tl.endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
+                    if not any(bad in tl for bad in ["logo", "seal", "flag", "sign", "map"]):
                         titles.append(t)
                         
-        for t in titles[:8]:
+        for t in titles[:6]:
             ir = requests.get(
                 "https://en.wikipedia.org/w/api.php",
                 params={
@@ -57,7 +58,7 @@ def get_wikipedia_campus_photos(uni_name):
                 if u:
                     name_clean = t.replace("File:", "").replace(".jpg", "").replace(".png", "")
                     photos.append({"url": u, "title": name_clean[:40], "category": "Кампус"})
-            if len(photos) >= 6:
+            if len(photos) >= 5:
                 break
     except Exception:
         pass
@@ -65,7 +66,7 @@ def get_wikipedia_campus_photos(uni_name):
 
 def get_ai_data_from_gemini(uni_name):
     if not GEMINI_API_KEY:
-        raise ValueError("Ключ GEMINI_API_KEY пустой в Render!")
+        raise ValueError("GEMINI_API_KEY не задан в переменных окружения Render!")
 
     prompt = f"""
 Составь детальный профиль университета "{uni_name}".
@@ -93,52 +94,46 @@ def get_ai_data_from_gemini(uni_name):
         }
     }
 
-    # 1. Автоматически запрашиваем список всех доступных моделей у Google под ваш ключ
-    target_models = []
+    # Сборка URL из частей без текстовых ссылок в коде
+    domain = "".join(["https://", "generativelanguage", ".", "googleapis", ".com"])
+    
+    # 1. Получаем список моделей, которые РЕАЛЬНО работают на вашем аккаунте
+    valid_models = []
     try:
-        r_models = requests.get(
-            "[https://generativelanguage.googleapis.com/v1beta/models](https://generativelanguage.googleapis.com/v1beta/models)",
-            params={"key": GEMINI_API_KEY},
-            timeout=10
-        )
-        if r_models.status_code == 200:
-            for item in r_models.json().get("models", []):
-                methods = item.get("supportedGenerationMethods", [])
-                if "generateContent" in methods:
-                    target_models.append(item.get("name"))
+        list_url = f"{domain}/v1beta/models"
+        r_list = requests.get(list_url, params={"key": GEMINI_API_KEY}, timeout=8)
+        if r_list.status_code == 200:
+            for item in r_list.json().get("models", []):
+                if "generateContent" in item.get("supportedGenerationMethods", []):
+                    valid_models.append(item.get("name").replace("models/", ""))
     except Exception:
         pass
 
-    if not target_models:
-        target_models = ["models/gemini-2.0-flash", "models/gemini-2.5-flash", "models/gemini-1.5-flash"]
-
-    # Приоритет отдаем быстрым flash-моделям
-    target_models.sort(key=lambda x: (
-        0 if "2.0-flash" in x else (1 if "2.5-flash" in x else (2 if "1.5-flash" in x else 3))
-    ))
+    if not valid_models:
+        valid_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 
     last_err = ""
-    for full_name in target_models:
-        clean_model = full_name.replace("models/", "")
-        api_url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){clean_model}:generateContent"
+    for model_name in valid_models:
+        api_url = f"{domain}/v1beta/models/{model_name}:generateContent"
         try:
             res = requests.post(
                 api_url,
                 params={"key": GEMINI_API_KEY},
                 json=payload,
                 headers={"Content-Type": "application/json"},
-                timeout=20
+                timeout=18
             )
             if res.status_code == 200:
-                raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-                clean_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw.strip(), flags=re.M)
+                raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                clean_json = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text.strip(), flags=re.M)
                 return json.loads(clean_json)
             else:
                 last_err = f"Google HTTP {res.status_code}: {res.text[:120]}"
         except Exception as e:
             last_err = str(e)
 
-    raise RuntimeError(last_err or "Все модели Gemini отклонили запрос")
+    raise RuntimeError(last_err or "Все модели отклонили запрос")
+
 @app.route("/")
 def home():
     return render_template("index.html")
@@ -153,10 +148,12 @@ def search():
     aliases = {
         "nu": "Nazarbayev University",
         "ну": "Nazarbayev University",
-        "mit": "MIT",
-        "кбту": "Kazakh-British Technical University",
+        "mit": "Massachusetts Institute of Technology",
+        "мит": "Massachusetts Institute of Technology",
         "стэнфорд": "Stanford University",
-        "стенфорд": "Stanford University"
+        "стенфорд": "Stanford University",
+        "oxford": "University of Oxford",
+        "оксфорд": "University of Oxford"
     }
     uni = aliases.get(raw_query.lower(), raw_query)
 
