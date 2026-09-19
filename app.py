@@ -1,194 +1,157 @@
+import json
 import os
 import re
-import json
-import requests
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, jsonify, render_template, request
+
+try:
+  import requests
+
+  USE_REQUESTS = True
+except ImportError:
+  import urllib.request
+
+  USE_REQUESTS = False
 
 app = Flask(__name__)
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
+
 def get_wikipedia_campus_photos(uni_name):
-    headers = {"User-Agent": "LocusCampusAI/6.0"}
-    found_photos = []
+  clean = re.sub(
+      r"\b(university|университет|институт)\b", "", uni_name, flags=re.I
+  ).strip()
+  url = f"https://en.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch={clean}+campus&gsrlimit=5&prop=images&imlimit=25&format=json&utf8=1"
+  photos = []
+  try:
+    headers = {"User-Agent": "LocusCampus/7.0"}
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=5) as r:
+      data = json.loads(r.read().decode())
+      pages = data.get("query", {}).get("pages", {})
+      for _, p in pages.items():
+        for img in p.get("images", []):
+          t = img.get("title", "")
+          if any(
+              t.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png"]
+          ) and not any(
+              b in t.lower()
+              for b in ["logo", "seal", "flag", "sign", "map", "diagram"]
+          ):
+            info_url = f"https://en.wikipedia.org/w/api.php?action=query&titles={urllib.parse.quote(t)}&prop=imageinfo&iiprop=url&iiurlwidth=800&format=json"
+            req_info = urllib.request.Request(info_url, headers=headers)
+            with urllib.request.urlopen(req_info, timeout=4) as ir:
+              idata = json.loads(ir.read().decode())
+              for _, ip in idata.get("query", {}).get("pages", {}).items():
+                u = ip.get("imageinfo", [{}])[0].get("thumburl")
+                if u:
+                  photos.append({
+                      "url": u,
+                      "title": t.replace("File:", "")[:40],
+                      "category": "Кампус",
+                  })
+          if len(photos) >= 8:
+            return photos
+  except Exception:
+    pass
+  return photos
 
-    clean_name = re.sub(r"\b(university|университет|институт)\b", "", uni_name, flags=re.I).strip()
-    search_query = f"{clean_name} campus"
-
-    bad_words = ["logo", "seal", "coat", "flag", "icon", "stub", "symbol", "sign", "map", "diagram", "chart"]
-    image_titles = []
-
-    try:
-        search_params = {
-            "action": "query",
-            "generator": "search",
-            "gsrsearch": search_query,
-            "gsrlimit": 5,
-            "prop": "images",
-            "imlimit": 30,
-            "format": "json",
-            "utf8": 1
-        }
-        r = requests.get("https://en.wikipedia.org/w/api.php", params=search_params, headers=headers, timeout=6)
-        if r.status_code == 200:
-            pages = r.json().get("query", {}).get("pages", {})
-            for _, p in pages.items():
-                for img in p.get("images", []):
-                    t = img.get("title", "")
-                    tl = t.lower()
-                    if any(tl.endswith(ext) for ext in [".jpg", ".jpeg", ".png"]):
-                        if not any(bad in tl for bad in bad_words) and t not in image_titles:
-                            image_titles.append(t)
-    except Exception:
-        pass
-
-    for title in image_titles[:12]:
-        if len(found_photos) >= 8:
-            break
-        try:
-            info_params = {
-                "action": "query",
-                "titles": title,
-                "prop": "imageinfo",
-                "iiprop": "url",
-                "iiurlwidth": 800,
-                "format": "json"
-            }
-            r = requests.get("https://en.wikipedia.org/w/api.php", params=info_params, headers=headers, timeout=4)
-            if r.status_code == 200:
-                pages = r.json().get("query", {}).get("pages", {})
-                for _, p in pages.items():
-                    info = p.get("imageinfo", [])
-                    if info:
-                        url = info[0].get("thumburl") or info[0].get("url")
-                        raw_title = title.replace("File:", "").replace(".jpg", "").replace(".png", "").replace(".jpeg", "")
-                        raw_title = re.sub(r"[-_]+", " ", raw_title).strip()
-                        if url:
-                            found_photos.append({
-                                "url": url,
-                                "title": raw_title[:45],
-                                "category": "Кампус"
-                            })
-        except Exception:
-            continue
-
-    return found_photos
 
 def get_ai_data_from_gemini(uni_name):
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY не задан в переменных Render!")
+  if not GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY отсутствует в Environment Variables!")
 
-    prompt = f"""
-Составь детальный профиль университета: "{uni_name}".
-Приводи реальные факты: год основания, место в QS/THE, число студентов, имена выпускников, нобелевских лауреатов, названия общежитий и традиций, баллы экзаменов (SAT, IELTS, ЕНТ).
+  prompt = (
+      f"Детальный профиль университета '{uni_name}'. "
+      "Ответь валидным JSON: location, overview, atmosphere, history, strengths"
+      " (массив из 4 строк), facts (массив из 4 строк), admissions (объект с"
+      " полями exams, documents, funding, insider_tip). Только факты и цифры."
+  )
+  payload = {
+      "contents": [{"parts": [{"text": prompt}]}],
+      "generationConfig": {
+          "temperature": 0.3,
+          "response_mime_type": "application/json",
+      },
+  }
 
-Ответь ИСКЛЮЧИТЕЛЬНО валидным JSON на русском языке (без разметки ```json):
-{{
-  "location": "Город, Страна",
-  "overview": "Развернутый обзор (4-5 предложений) с цифрами и рейтингами.",
-  "atmosphere": "Студенческая жизнь (4-5 предложений): традиции, спорт, быт.",
-  "history": "История (4-5 предложений): основатели, даты, прорывы, выпускники.",
-  "strengths": ["Факультет 1 с деталями", "Факультет 2 с деталями", "Факультет 3 с деталями", "Факультет 4 с деталями"],
-  "facts": ["Факт 1 с цифрами", "Факт 2 о стартапах/науке", "Факт 3 о традициях", "Факт 4"],
-  "admissions": {{
-    "exams": "Баллы IELTS, SAT, GPA и требования",
-    "documents": "Требования к эссе и портфолио",
-    "funding": "Стипендии, гранты, покрытие расходов",
-    "insider_tip": "Совет поступающим"
-  }}
-}}
-"""
+  endpoint = (
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key="
+      + GEMINI_API_KEY
+  )
+  raw_text = ""
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.35,
-            "response_mime_type": "application/json"
-        }
-    }
+  if USE_REQUESTS:
+    res = requests.post(
+        endpoint,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=20,
+    )
+    if res.status_code != 200:
+      raise RuntimeError(f"Google HTTP {res.status_code}: {res.text[:120]}")
+    raw_text = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+  else:
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as res:
+      raw_text = json.loads(res.read().decode())["candidates"][0]["content"][
+          "parts"
+      ][0]["text"]
 
-    headers = {"Content-Type": "application/json"}
-    last_err = ""
-    models = ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]
+  cleaned = re.sub(
+      r"^```(?:json)?\s*|\s*```$", "", raw_text.strip(), flags=re.M
+  )
+  return json.loads(cleaned)
 
-    for model in models:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=20)
-            if response.status_code == 200:
-                data = response.json()
-                raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text.strip(), flags=re.M)
-                return json.loads(cleaned)
-            else:
-                last_err = f"Google HTTP {response.status_code}: {response.text[:120]}"
-        except Exception as e:
-            last_err = str(e)
-
-    raise RuntimeError(last_err or "Нет ответа от моделей Gemini")
-
-def get_map_urls(uni_name):
-    q = requests.utils.quote(f"{uni_name} University campus")
-    return {
-        "embed_url": f"[https://maps.google.com/maps?q=](https://maps.google.com/maps?q=){q}&t=&z=15&ie=UTF8&iwloc=&output=embed",
-        "direct_url": f"[https://www.google.com/maps/search/?api=1&query=](https://www.google.com/maps/search/?api=1&query=){q}"
-    }
 
 @app.route("/")
 def home():
-    return render_template("index.html")
+  return render_template("index.html")
+
 
 @app.route("/search", methods=["POST"])
 def search():
-    data = request.get_json() or {}
-    raw_query = data.get("university", "").strip()
-    if not raw_query:
-        return jsonify({"error": "Введите название университета"}), 400
+  query = (request.get_json() or {}).get("university", "").strip()
+  if not query:
+    return jsonify({"error": "Пустой запрос"}), 400
 
-    aliases = {
-        "nu": "Nazarbayev University",
-        "ну": "Nazarbayev University",
-        "назарбаев": "Nazarbayev University",
-        "mit": "Massachusetts Institute of Technology",
-        "мит": "Massachusetts Institute of Technology",
-        "кбту": "Kazakh-British Technical University",
-        "kbtu": "Kazakh-British Technical University",
-        "казну": "Al-Farabi Kazakh National University",
-        "kaznu": "Al-Farabi Kazakh National University",
-        "стэнфорд": "Stanford University",
-        "стенфорд": "Stanford University",
-        "stanford": "Stanford University",
-        "гарвард": "Harvard University",
-        "harvard": "Harvard University",
-        "оксфорд": "University of Oxford",
-        "oxford": "University of Oxford",
-        "кембридж": "University of Cambridge",
-        "cambridge": "University of Cambridge"
-    }
+  aliases = {
+      "nu": "Nazarbayev University",
+      "ну": "Nazarbayev University",
+      "mit": "MIT",
+      "кбту": "Kazakh-British Technical University",
+      "стэнфорд": "Stanford University",
+  }
+  target = aliases.get(query.lower(), query)
 
-    search_uni = aliases.get(raw_query.lower(), raw_query)
+  try:
+    ai = get_ai_data_from_gemini(target)
+  except Exception as e:
+    return jsonify({"error": f"Сбой ИИ: {str(e)}"}), 500
 
-    try:
-        ai_content = get_ai_data_from_gemini(search_uni)
-    except Exception as e:
-        return jsonify({"error": f"Ошибка ИИ: {str(e)}"}), 500
+  q_url = urllib.parse.quote(f"{target} University campus")
+  return jsonify({
+      "university": target,
+      "location": ai.get("location", ""),
+      "overview": ai.get("overview", ""),
+      "atmosphere": ai.get("atmosphere", ""),
+      "history": ai.get("history", ""),
+      "strengths": ai.get("strengths", []),
+      "facts": ai.get("facts", []),
+      "admissions": ai.get("admissions", {}),
+      "images": get_wikipedia_campus_photos(target),
+      "maps": {
+          "embed_url": (
+              f"https://maps.google.com/maps?q={q_url}&t=&z=15&ie=UTF8&iwloc=&output=embed"
+          ),
+          "direct_url": f"https://www.google.com/maps/search/?api=1&query={q_url}",
+      },
+  })
 
-    images = get_wikipedia_campus_photos(search_uni)
-    maps_info = get_map_urls(search_uni)
-
-    return jsonify({
-        "university": search_uni,
-        "location": ai_content.get("location", ""),
-        "overview": ai_content.get("overview", ""),
-        "atmosphere": ai_content.get("atmosphere", ""),
-        "history": ai_content.get("history", ""),
-        "strengths": ai_content.get("strengths", []),
-        "facts": ai_content.get("facts", []),
-        "admissions": ai_content.get("admissions", {}),
-        "images": images,
-        "maps": maps_info
-    })
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+  port = int(os.environ.get("PORT", 8080))
+  app.run(host="0.0.0.0", port=port)
