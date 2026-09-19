@@ -145,8 +145,7 @@ def get_ai_data_from_gemini(uni_name):
   last_err = ""
 
   for model in ["gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro"]:
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={GEMINI_API_KEY}"
-    try:
+   url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + GEMINI_API_KEY
       response = requests.post(url, json=payload, headers=headers, timeout=20)
       if response.status_code == 200:
         raw_text = (
